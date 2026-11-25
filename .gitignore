@@ -1,0 +1,20 @@
+# This repo carries source code, the skill and docs only.
+# Previews and thumbnails live on the catalog site, not in git.
+previews/
+thumbs/
+*.mp4
+*.mov
+*.gif
+*.zip
+
+# Build and runtime noise
+node_modules/
+out/
+dist/
+.DS_Store
+*.log
+
+# Internal working files
+hidden_files/
+*.bak
+*.bak-*

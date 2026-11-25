@@ -1,0 +1,292 @@
+// Adapted from FredTalk (https://github.com/njrhts2kvv-star/FredTalk), MIT License.
+// Source: T15g-RankReveal.tsx + src/kit/theme.ts + src/kit/ui.tsx, from package fred-wave3-40-20261012
+// （Fred 官网视觉库公开下载；ZIP 归档 ~/workspace/tools/FredTalk/downloads-b/fred-wave3-40-source.zip，
+// 2026-11-02 经公开路线下载、SHA-256 与 manifest 一致后 import，本批「B 类剩余全量提炼·第二组」集成）。
+// 用途：排行揭晓（正版 T15g）——名次从后往前一行行翻上来 → 第一名最后揭晓。
+// 集成注记：原包 Sfx 音效未随 MIT 集成（已剔除，本件静音）；原包字体未集成，字体走本库 FONT（等宽走系统等宽栈）；
+// Brand 角标未集成（Frame 的 brand 入参仅兼容、忽略）；kit 的 theme/ui 已内嵌移植（见下），逻辑与原版一致；
+// defaults 保留原包示例数据（原版节目示例），使用时请传真实数据。
+// 舞台为 1920×1080 逻辑坐标，Frame 按宿主宽度等比缩放。调色板保留原版设计。
+import React from 'react';
+import { AbsoluteFill, Easing, Img, OffthreadVideo, staticFile, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
+import { FONT } from '../src/theme';
+
+const MONO = "'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace";
+
+// —— kit/theme 最小移植（MIT，逻辑逐字；字体名映射到本库 FONT 与系统等宽栈） ——
+const S = {
+  ink: '#19191c',
+  dark: '#19191c',
+  windowBody: '#212123',
+  windowBar: '#161618',
+  muted: '#6c6c72',
+  faint: '#a3a3ab',
+  accent: '#8554E8',
+  accentDark: '#D6BEFF',
+  radius: 24,
+  shadow: '0 16px 25px 0 rgba(0,0,0,0.1333333333)',
+  capsuleShadow: '30px 22px 25px #0005',
+  windowShadow: '-25px 6px 35px #0003',
+  textShadowDark: '8px 9px 5px #000',
+  body: FONT,
+  display: FONT,
+  mono: MONO,
+  kai: FONT,
+};
+const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const mix = (a: number, b: number, p: number) => a + (b - a) * p;
+const easeOut = Easing.bezier(0.22, 1, 0.36, 1);
+const p = (t: number, a: number, b: number) =>
+  interpolate(t, [a, b], [0, 1], { easing: easeOut, extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+const q = (t: number, a: number, b: number) => {
+  const v = clamp((t - a) / (b - a));
+  return v * v * (3 - 2 * v);
+};
+const chapterCurve = Easing.bezier(0.65, 0, 0.2, 1);
+const wipe = (t: number, a: number, b: number) =>
+  interpolate(t, [a, b], [0, 1], { easing: chapterCurve, extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+const springAt = (t: number, delay: number, duration = 0.8) => {
+  const v = clamp((t - delay) / duration);
+  return v === 1 ? 1 : 1 - Math.exp(-8 * v) * Math.cos(9 * v);
+};
+const quintic = (t: number, a: number, b: number) => {
+  const v = clamp((t - a) / (b - a));
+  return v * v * v * (v * (6 * v - 15) + 10);
+};
+const typed = (s: string, t: number, a: number, b: number) => {
+  const chars = Array.from(s);
+  return chars.slice(0, Math.floor(clamp((t - a) / (b - a)) * chars.length)).join('');
+};
+const textWidth = (s: string, size: number) =>
+  Array.from(s).reduce((w, ch) => w + (/[\u0000-\u00ff]/.test(ch) ? 0.58 : 1) * size, 0);
+const cameraTransform = (focusX: number, focusY: number, zoom: number, push: number) => {
+  const fx = mix(960, focusX, push), fy = mix(540, focusY, push), z = mix(1, zoom, push);
+  return `translate(960px, 540px) scale(${z}) translate(${-fx}px, ${-fy}px)`;
+};
+const cueAt = (cues: readonly number[] | undefined, i: number, fallback: number) =>
+  cues && typeof cues[i] === 'number' && Number.isFinite(cues[i]) ? cues[i] : fallback;
+const accentOn = (dark: boolean) => (dark ? S.accentDark : S.accent);
+const inkOn = (dark: boolean) => (dark ? '#fff' : S.ink);
+
+// —— kit/ui 最小移植（Frame/Surface/Pill/MacWindow/Media/Cursor/ClickRing/Handoff/textBase，去 Brand、Fonts 与 Sfx） ——
+const useT = () => useCurrentFrame() / useVideoConfig().fps;
+const textBase = (size: number, weight = 900, family: string = FONT): React.CSSProperties => ({
+  fontFamily: family, fontWeight: weight, fontSize: size, lineHeight: 1.16, fontSynthesis: 'none', whiteSpace: 'nowrap',
+});
+type Box = { x: number; y: number; w: number; h: number };
+const abs = ({ x, y, w, h }: Box): React.CSSProperties => ({ position: 'absolute', left: x, top: y, width: w, height: h });
+const between = (a: Box, b: Box, t: number): Box => ({ x: mix(a.x, b.x, t), y: mix(a.y, b.y, t), w: mix(a.w, b.w, t), h: mix(a.h, b.h, t) });
+const center: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center' };
+function Frame({ children, dark = false, background }: { children: React.ReactNode; brand?: boolean; dark?: boolean; background?: string }) {
+  const { width } = useVideoConfig();
+  return <AbsoluteFill style={{
+    background: background ?? (dark ? S.dark : '#fff'), overflow: 'hidden', fontFamily: FONT,
+    fontWeight: 500, fontSynthesis: 'none', color: dark ? '#fff' : S.ink,
+  }}>
+    <div style={{ position: 'absolute', width: 1920, height: 1080, transform: `scale(${width / 1920})`, transformOrigin: '0 0', overflow: 'hidden' }}>
+      {children}
+    </div>
+  </AbsoluteFill>;
+}
+function Surface({ box, dark = false, radius = S.radius, shadow = S.shadow, style, children }: {
+  box: Box; dark?: boolean; radius?: number; shadow?: string; style?: React.CSSProperties; children?: React.ReactNode;
+}) {
+  return <div style={{
+    ...abs(box), background: dark ? S.dark : '#fff', color: dark ? '#fff' : S.ink, border: 'none',
+    borderRadius: radius, boxShadow: shadow, overflow: 'hidden', ...style,
+  }}>{children}</div>;
+}
+function Pill({ box, dark = true, shadow = S.capsuleShadow, style, children }: {
+  box: Box; dark?: boolean; shadow?: string; style?: React.CSSProperties; children?: React.ReactNode;
+}) {
+  return <Surface box={box} dark={dark} radius={Math.min(box.w, box.h) / 2} shadow={shadow} style={{ ...center, ...style }}>{children}</Surface>;
+}
+function MacWindow({ box, light = false, bar = 90, radius = 36, shadow, style, children, title }: {
+  box: Box; light?: boolean; bar?: number; radius?: number; shadow?: string; style?: React.CSSProperties; children?: React.ReactNode; title?: string;
+}) {
+  const dot = Math.round(bar * 0.267);
+  return <div style={{
+    ...abs(box), borderRadius: radius, overflow: 'hidden', background: light ? '#fff' : S.windowBody,
+    boxShadow: shadow ?? (light ? S.shadow : S.windowShadow), ...style,
+  }}>
+    <div style={{ height: bar, background: light ? '#f4f4f6' : S.windowBar, display: 'flex', alignItems: 'center', gap: dot, paddingLeft: bar * 0.63, position: 'relative' }}>
+      {[S.accent, '#aaa', light ? '#ddd' : '#eee'].map((c) => <span key={c} style={{ width: dot, height: dot, borderRadius: dot, background: c }} />)}
+      {title && <div style={{ position: 'absolute', left: 0, right: 0, textAlign: 'center', fontSize: bar * 0.36, color: light ? S.muted : '#8d8d93', fontWeight: 500 }}>{title}</div>}
+    </div>
+    <div style={{ position: 'absolute', left: 0, top: bar, right: 0, bottom: 0 }}>{children}</div>
+  </div>;
+}
+function Media({ src, box, radius = S.radius, fit = 'cover', start = 0, style, objectPosition }: {
+  src: string; box: Box; radius?: number; fit?: 'cover' | 'contain'; start?: number; style?: React.CSSProperties; objectPosition?: string;
+}) {
+  const { fps } = useVideoConfig();
+  if (!src) {
+    // 空串＝中性骨架占位面（原包示例素材不集成，传真实素材路径即走原图）
+    return <div style={{ ...abs(box), borderRadius: radius, overflow: 'hidden', ...style }}>
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(160deg, #eef1f5 0%, #d7dde6 60%, #bfc9d6 100%)' }} />
+      <div style={{ position: 'absolute', left: '6%', top: '8%', width: '46%', height: '7%', borderRadius: 12, background: 'rgba(90,100,115,0.35)' }} />
+      <div style={{ position: 'absolute', left: '6%', top: '22%', width: '78%', height: '4.5%', borderRadius: 9, background: 'rgba(90,100,115,0.22)' }} />
+      <div style={{ position: 'absolute', left: '6%', top: '31%', width: '70%', height: '4.5%', borderRadius: 9, background: 'rgba(90,100,115,0.22)' }} />
+    </div>;
+  }
+  const image = /\.(png|jpe?g|webp)$/i.test(src);
+  const inner: React.CSSProperties = { width: '100%', height: '100%', objectFit: fit, objectPosition, display: 'block' };
+  return <div style={{ ...abs(box), borderRadius: radius, overflow: 'hidden', ...style }}>
+    {image ? <Img src={staticFile(src)} style={inner} /> : <OffthreadVideo muted src={staticFile(src)} startFrom={Math.round(start * fps)} style={inner} />}
+  </div>;
+}
+
+// 中性占位图：src 为空串时以浅灰骨架面顶替（几何/定位与原 Img 一致），传真实素材路径时即原图。
+function ImgFill({ src, style }: { src: string; style: React.CSSProperties }) {
+  if (!src) {
+    return <div style={{ ...style, objectFit: undefined, objectPosition: undefined, background: 'linear-gradient(160deg, #eef1f5 0%, #d7dde6 60%, #bfc9d6 100%)' }} />;
+  }
+  return <Img src={staticFile(src)} style={style} />;
+}
+function Cursor({ x, y, scale = 1, press = 0, style }: { x: number; y: number; scale?: number; press?: number; style?: React.CSSProperties }) {
+  return <svg width={65 * scale} height={80 * scale} viewBox="0 0 52 64" style={{
+    position: 'absolute', left: x, top: y, filter: 'drop-shadow(0 4px 5px #0003)', transform: `scale(${1 - 0.12 * press})`, transformOrigin: '10% 5%', zIndex: 800, ...style,
+  }}>
+    <path d="M5 3 L5 50 L17 38 L27 60 L37 55 L27 34 L44 34 Z" fill="#171719" stroke="#fff" strokeWidth="3" strokeLinejoin="round" />
+  </svg>;
+}
+function ClickRing({ x, y, t, at, dark = false }: { x: number; y: number; t: number; at: number; dark?: boolean }) {
+  const v = Math.max(0, Math.min(1, (t - at) / 0.45));
+  if (v <= 0 || v >= 1) return null;
+  const r = 18 + 52 * v;
+  return <div style={{
+    position: 'absolute', left: x - r, top: y - r, width: r * 2, height: r * 2, borderRadius: r,
+    border: `${6 * (1 - v) + 1}px solid ${dark ? S.accentDark : S.accent}`, opacity: 1 - v, zIndex: 790,
+  }} />;
+}
+export type YangHandoffEnter = 'cut' | 'fade' | 'rise' | 'grow';
+export type YangHandoffExit = 'none' | 'recede' | 'fade' | 'cut' | 'slide-left' | 'slide-up';
+export type YangHandoffProps = { enter?: YangHandoffEnter; exit?: YangHandoffExit; exitAt?: number };
+function Handoff({ enter = 'cut', exit = 'none', enterAt = 0, enterDur = 0.45, exitAt, exitDur = 0.5, children }: {
+  enter?: YangHandoffEnter; exit?: YangHandoffExit; enterAt?: number; enterDur?: number; exitAt?: number; exitDur?: number; children: React.ReactNode;
+}) {
+  const t = useT();
+  const { durationInFrames, fps } = useVideoConfig();
+  const at = exitAt ?? durationInFrames / fps - exitDur;
+  const v = enter === 'cut' ? 1 : Math.max(0, Math.min(1, (t - enterAt) / enterDur));
+  const e = 1 - Math.pow(1 - v, 3);
+  const x = exit === 'none' ? 0 : exit === 'cut' ? (t >= at ? 1 : 0) : Math.max(0, Math.min(1, (t - at) / exitDur));
+  const xs = x * x * (3 - 2 * x);
+  let opacity = enter === 'cut' ? 1 : e;
+  let transform = '';
+  let filter = '';
+  if (enter === 'rise') transform += `translateY(${(1 - e) * 40}px) `;
+  if (enter === 'grow') transform += `scale(${mix(0.94, 1, e)}) `;
+  if (exit === 'recede') { transform += `scale(${mix(1, 0.92, xs)}) `; filter = `blur(${xs * 14}px)`; opacity *= 1 - xs; }
+  if (exit === 'fade' || exit === 'cut') opacity *= 1 - xs;
+  if (exit === 'slide-left') transform += `translateX(${-xs * 1100}px) `;
+  if (exit === 'slide-up') transform += `translateY(${-xs * 700}px) `;
+  if (exit === 'slide-left' || exit === 'slide-up') opacity *= 1 - xs * 0.9;
+  return <div style={{ position: 'absolute', inset: 0, opacity, transform: transform || undefined, filter: filter || undefined, transformOrigin: '960px 540px' }}>{children}</div>;
+}
+
+export type YangRankRow = { name: string; score: number; logo?: string };   // logo 为 public 下的图片路径，可空
+export type YangRankRevealProps = YangHandoffProps & {
+  rows: YangRankRow[];        // 3–6 行，按名次从第 1 名到最后一名给出
+  decimals: number;
+  prefix: string;
+  suffix: string;
+  caption?: string;       // 排行出处一行，可空
+  cues?: number[];        // 按揭晓顺序（最后一名在前）：[0]=最后一名翻起，…，最后一个=第一名
+};
+
+// 真实数据：原版 107 期 DeepSWE v1.1 各模型最高得分（deepswe.png 折线读数，与 107 期口播一致）：GPT-6.1 Sol 75.4%、GPT-6 Astra 74.3%、GPT-6 Sol 69.0%。
+export const yangRankRevealDefaults: YangRankRevealProps = {
+  rows: [
+    { name: 'GPT-6.1 Sol', score: 75.4 },
+    { name: 'GPT-6 Astra', score: 74.3 },
+    { name: 'GPT-6 Sol', score: 69.0 },
+  ],
+  decimals: 1,
+  prefix: '',
+  suffix: '%',
+  caption: 'DeepSWE v1.1 最高得分',
+};
+
+const fmt = (v: number, d: number) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const glyph = (ch: string) => (/\d/.test(ch) ? 0.6 : /[.,:]/.test(ch) ? 0.3 : ch === '%' ? 0.86 : ch === ' ' ? 0.28 : /[\u0000-ÿ]/.test(ch) ? 0.62 : 1);
+const numWidth = (s: string, size: number) => Array.from(s).reduce((w, ch) => w + glyph(ch) * size, 0);
+function Num({ text, size, color }: { text: string; size: number; color: string }) {
+  return <span style={{ ...textBase(size, 900), lineHeight: 1, display: 'inline-flex', color, fontVariantNumeric: 'tabular-nums' }}>
+    {Array.from(text).map((ch, i) => <span key={i} style={{ display: 'inline-block', width: glyph(ch) * size, textAlign: 'center' }}>{ch}</span>)}
+  </span>;
+}
+
+const ROW_X = 280, ROW_W = 1360;
+
+export function YangRankReveal(props: Partial<YangRankRevealProps>) {
+  const c = { ...yangRankRevealDefaults, ...props };
+  const t = useT();
+  const rows = c.rows.slice(0, 6);
+  const n = Math.max(1, rows.length);
+
+  // —— 版式：第一名更大；总高不超过 830，保证右上角标留空 ——
+  const capH = c.caption ? 84 : 0;
+  const gap = 24;
+  const avail = 830 - capH;
+  const rowH = Math.min(156, (avail - gap * (n - 1)) / (n - 1 + 1.5));
+  const heroH = n === 1 ? Math.min(234, avail) : rowH * 1.5;
+  const H = heroH + (n - 1) * (rowH + gap) + (n > 1 ? 0 : 0);
+  const top0 = (1080 - H - capH) / 2 + 6;
+  const rowTop = (i: number) => (i === 0 ? top0 : top0 + heroH + gap + (i - 1) * (rowH + gap));
+  const str = (v: number) => `${c.prefix}${fmt(v, c.decimals)}${c.suffix}`;
+  const maxScoreW = Math.max(...rows.map((r) => numWidth(str(r.score), 1)));
+
+  // —— 时间线：最后一名先翻，第一名最后；第一名前停一拍 ——
+  const order = [...rows.keys()].reverse();                   // 揭晓顺序：最后一名 → 第一名
+  const step = Math.min(0.62, 2.8 / Math.max(1, n - 1));
+  const times = order.map((_, k) => cueAt(c.cues, k, k === order.length - 1 && n > 1 ? 0.3 + (n - 1) * step + 0.55 : 0.3 + k * step));
+  const timeOf = (rank: number) => times[order.indexOf(rank)];
+
+  return <Frame>
+    <Handoff enter={c.enter} exit={c.exit} exitAt={c.exitAt}>
+      {rows.map((r, i) => {
+        const isHero = i === 0 && n > 1;
+        const h = isHero ? heroH : rowH;
+        const y = rowTop(i);
+        const at = timeOf(i);
+        const slot = p(t, 0, 0.35);
+        const flip = isHero ? Math.max(0, springAt(t, at, 0.85)) : p(t, at, at + 0.62);
+        const vis = isHero ? clamp((t - at) / 0.05) : clamp((t - at) / 0.05);
+        const roll = p(t, at + 0.1, at + (isHero ? 1.05 : 0.8));
+        const angle = (1 - flip) * 90;
+        const lift = (1 - clamp(flip)) * 34;
+        const pop = isHero ? 1 + 0.025 * clamp(1 - Math.abs(springAt(t, at + 0.1, 0.8) - 1) * 6, 0, 1) : 1;
+        // 版式
+        const pad = Math.round(h * 0.28);
+        const rankSize = Math.round(h * (isHero ? 0.62 : 0.56));
+        const logoSize = Math.round(h * 0.56);
+        const nameX = pad + rankSize * 0.62 + pad * 0.9 + (r.logo ? logoSize + pad * 0.7 : 0);
+        const scoreSize = Math.min(Math.round(h * (isHero ? 0.52 : 0.46)), 96);
+        const scoreW = maxScoreW * scoreSize;
+        const nameMax = ROW_W - nameX - scoreW - pad * 2;
+        const nameSize = Math.min(Math.round(h * (isHero ? 0.46 : 0.42)), nameMax / Math.max(1, textWidth(r.name, 1)));
+        const fg = isHero ? '#fff' : S.ink;
+        const rankColor = isHero ? S.accentDark : S.faint;
+        return <React.Fragment key={i}>
+          {/* 空位：先铺好，观众知道有几名 */}
+          <div style={{ position: 'absolute', left: ROW_X, top: y, width: ROW_W, height: h, borderRadius: S.radius, background: S.ink, opacity: 0.05 * slot * (1 - vis) }} />
+          {vis > 0 && <div style={{ position: 'absolute', left: ROW_X, top: y, width: ROW_W, height: h, opacity: clamp(flip * 4), transformOrigin: '50% 100%',
+            transform: `translateY(${lift}px) perspective(1500px) rotateX(${angle.toFixed(2)}deg) scale(${pop})`, zIndex: isHero ? 3 : 1 }}>
+            <Surface box={{ x: 0, y: 0, w: ROW_W, h }} dark={isHero} radius={S.radius} shadow={isHero ? S.capsuleShadow : S.shadow} style={{ overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', left: pad, top: (h - rankSize) / 2, width: rankSize * 0.62, textAlign: 'center', ...textBase(rankSize, 900), lineHeight: 1, color: rankColor }}>{i + 1}</div>
+              {r.logo && <Media src={r.logo} box={{ x: pad + rankSize * 0.62 + pad * 0.9, y: (h - logoSize) / 2, w: logoSize, h: logoSize }} fit="contain" radius={Math.round(logoSize * 0.2)} />}
+              <div style={{ position: 'absolute', left: nameX, top: (h - nameSize * 1.16) / 2, ...textBase(nameSize, 900), color: fg }}>{r.name}</div>
+              <div style={{ position: 'absolute', left: ROW_W - pad - scoreW, top: (h - scoreSize) / 2, width: scoreW, display: 'flex', justifyContent: 'flex-end' }}>
+                <Num text={str(r.score * roll)} size={scoreSize} color={isHero ? S.accentDark : S.ink} />
+              </div>
+            </Surface>
+          </div>}
+        </React.Fragment>;
+      })}
+      {c.caption && <div style={{ position: 'absolute', left: ROW_X, top: top0 + H + 40, width: ROW_W, textAlign: 'center', ...textBase(42, 500), color: S.muted, opacity: p(t, 0.3, 0.8) }}>{c.caption}</div>}
+    </Handoff>
+    
+    
+  </Frame>;
+}
