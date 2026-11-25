@@ -1,7 +1,9 @@
 # This repo carries source code, the skill and docs only.
 # Previews and thumbnails live on the catalog site, not in git.
-previews/
-thumbs/
+# (Anchored to the repo root: components/weilanx/previews/ holds 10 real
+#  free components and must NOT be excluded.)
+/previews/
+/thumbs/
 *.mp4
 *.mov
 *.gif
